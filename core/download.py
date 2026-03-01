@@ -2,6 +2,7 @@ from asyncio import Task, TimeoutError, create_task, gather, sleep, to_thread
 from collections.abc import Callable, Coroutine
 from functools import wraps
 from pathlib import Path
+from time import perf_counter
 from typing import Any, ParamSpec, TypeVar
 
 import aiofiles
@@ -182,9 +183,25 @@ class Downloader:
     ) -> Path:
         if video_name is None:
             video_name = generate_file_name(url, ".mp4")
-        return await self.streamd(
-            url, file_name=video_name, headers=headers, proxy=proxy
+        logger.info(
+            f"[astrobot_plugin_parser_timing] 视频开始下载: url={url}, file_name={video_name}"
         )
+        started_at = perf_counter()
+        try:
+            path = await self.streamd(
+                url, file_name=video_name, headers=headers, proxy=proxy
+            )
+            elapsed_ms = (perf_counter() - started_at) * 1000
+            logger.info(
+                f"[astrobot_plugin_parser_timing] 视频下载完成: path={path.name}, 耗时 {elapsed_ms:.2f}ms"
+            )
+            return path
+        except Exception:
+            elapsed_ms = (perf_counter() - started_at) * 1000
+            logger.warning(
+                f"[astrobot_plugin_parser_timing] 视频下载失败: url={url}, file_name={video_name}, 耗时 {elapsed_ms:.2f}ms"
+            )
+            raise
 
     @auto_task
     async def download_audio(
@@ -197,9 +214,25 @@ class Downloader:
     ) -> Path:
         if audio_name is None:
             audio_name = generate_file_name(url, ".mp3")
-        return await self.streamd(
-            url, file_name=audio_name, headers=headers, proxy=proxy
+        logger.info(
+            f"[astrobot_plugin_parser_timing] 音频开始下载: url={url}, file_name={audio_name}"
         )
+        started_at = perf_counter()
+        try:
+            path = await self.streamd(
+                url, file_name=audio_name, headers=headers, proxy=proxy
+            )
+            elapsed_ms = (perf_counter() - started_at) * 1000
+            logger.info(
+                f"[astrobot_plugin_parser_timing] 音频下载完成: path={path.name}, 耗时 {elapsed_ms:.2f}ms"
+            )
+            return path
+        except Exception:
+            elapsed_ms = (perf_counter() - started_at) * 1000
+            logger.warning(
+                f"[astrobot_plugin_parser_timing] 音频下载失败: url={url}, file_name={audio_name}, 耗时 {elapsed_ms:.2f}ms"
+            )
+            raise
 
     @auto_task
     async def download_file(
@@ -259,8 +292,24 @@ class Downloader:
             self.download_video(v_url, headers=headers, proxy=proxy),
             self.download_audio(a_url, headers=headers, proxy=proxy),
         )
-        await merge_av(v_path=v_path, a_path=a_path, output_path=output_path)
-        return output_path
+
+        merge_started_at = perf_counter()
+        logger.debug(
+            f"[astrobot_plugin_parser_timing] 开始合并音视频: v={v_path.name}, a={a_path.name}, output={output_path.name}"
+        )
+        try:
+            await merge_av(v_path=v_path, a_path=a_path, output_path=output_path)
+            merge_elapsed_ms = (perf_counter() - merge_started_at) * 1000
+            logger.info(
+                f"[astrobot_plugin_parser_timing] 合并音视频完成: output={output_path.name}, 耗时 {merge_elapsed_ms:.2f}ms"
+            )
+            return output_path
+        except Exception:
+            merge_elapsed_ms = (perf_counter() - merge_started_at) * 1000
+            logger.warning(
+                f"[astrobot_plugin_parser_timing] 合并音视频失败: output={output_path.name}, 耗时 {merge_elapsed_ms:.2f}ms"
+            )
+            raise
 
     async def ytdlp_extract_info(
         self,
@@ -330,37 +379,54 @@ class Downloader:
         format: str | None = None,
         node: bool = False,
     ) -> Path:
-        info = await self.ytdlp_extract_info(
-            url, cookiefile=cookiefile, headers=headers, proxy=proxy
-        )
-        if info.duration > self.cfg.max_duration:
-            raise DurationLimitException
+        logger.info(f"[astrobot_plugin_parser_timing] 视频开始下载(yt-dlp): url={url}")
+        started_at = perf_counter()
+        try:
+            info = await self.ytdlp_extract_info(
+                url, cookiefile=cookiefile, headers=headers, proxy=proxy
+            )
+            if info.duration > self.cfg.max_duration:
+                raise DurationLimitException
 
-        video_path = self.cfg.cache_dir / generate_file_name(url, ".mp4")
-        if video_path.exists():
+            video_path = self.cfg.cache_dir / generate_file_name(url, ".mp4")
+            if video_path.exists():
+                elapsed_ms = (perf_counter() - started_at) * 1000
+                logger.info(
+                    f"[astrobot_plugin_parser_timing] 视频下载完成(yt-dlp): path={video_path.name}, 耗时 {elapsed_ms:.2f}ms"
+                )
+                return video_path
+
+            opts = {
+                "outtmpl": str(video_path),
+                "merge_output_format": "mp4",
+                # "format": f"bv[filesize<={info.duration // 10 + 10}M]+ba/b[filesize<={info.duration // 8 + 10}M]",
+                # "format": "bv*[height<=720]+ba/b[height<=720]",
+                "format": format or "best",
+                "postprocessors": [
+                    {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
+                ],
+                "http_headers": headers or self.default_headers,
+            }
+            if proxy:
+                opts["proxy"] = proxy
+            if cookiefile and cookiefile.is_file():
+                opts["cookiefile"] = str(cookiefile)
+            if node:
+                opts["js_runtimes"] = {"node": {}}
+
+            with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+                await to_thread(ydl.download, [url])
+            elapsed_ms = (perf_counter() - started_at) * 1000
+            logger.info(
+                f"[astrobot_plugin_parser_timing] 视频下载完成(yt-dlp): path={video_path.name}, 耗时 {elapsed_ms:.2f}ms"
+            )
             return video_path
-
-        opts = {
-            "outtmpl": str(video_path),
-            "merge_output_format": "mp4",
-            # "format": f"bv[filesize<={info.duration // 10 + 10}M]+ba/b[filesize<={info.duration // 8 + 10}M]",
-            # "format": "bv*[height<=720]+ba/b[height<=720]",
-            "format": format or "best",
-            "postprocessors": [
-                {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
-            ],
-            "http_headers": headers or self.default_headers,
-        }
-        if proxy:
-            opts["proxy"] = proxy
-        if cookiefile and cookiefile.is_file():
-            opts["cookiefile"] = str(cookiefile)
-        if node:
-            opts["js_runtimes"] = {"node": {}}
-
-        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-            await to_thread(ydl.download, [url])
-        return video_path
+        except Exception:
+            elapsed_ms = (perf_counter() - started_at) * 1000
+            logger.warning(
+                f"[astrobot_plugin_parser_timing] 视频下载失败(yt-dlp): url={url}, 耗时 {elapsed_ms:.2f}ms"
+            )
+            raise
 
     @auto_task
     async def ytdlp_download_audio(
@@ -372,29 +438,46 @@ class Downloader:
         proxy: str | None = None,
         format: str | None = None,
     ) -> Path:
-        file_name = generate_file_name(url)
-        audio_path = self.cfg.cache_dir / f"{file_name}.flac"
-        if audio_path.exists():
+        logger.info(f"[astrobot_plugin_parser_timing] 音频开始下载(yt-dlp): url={url}")
+        started_at = perf_counter()
+        try:
+            file_name = generate_file_name(url)
+            audio_path = self.cfg.cache_dir / f"{file_name}.flac"
+            if audio_path.exists():
+                elapsed_ms = (perf_counter() - started_at) * 1000
+                logger.info(
+                    f"[astrobot_plugin_parser_timing] 音频下载完成(yt-dlp): path={audio_path.name}, 耗时 {elapsed_ms:.2f}ms"
+                )
+                return audio_path
+
+            opts = {
+                "outtmpl": str(self.cfg.cache_dir / file_name) + ".%(ext)s",
+                "format": format or "bestaudio/best",
+                "postprocessors": [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "flac",
+                        "preferredquality": "0",
+                    }
+                ],
+                "cookiefile": None,
+                "http_headers": headers or self.default_headers,
+            }
+            if proxy:
+                opts["proxy"] = proxy
+            if cookiefile and cookiefile.is_file():
+                opts["cookiefile"] = str(cookiefile)
+
+            with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+                await to_thread(ydl.download, [url])
+            elapsed_ms = (perf_counter() - started_at) * 1000
+            logger.info(
+                f"[astrobot_plugin_parser_timing] 音频下载完成(yt-dlp): path={audio_path.name}, 耗时 {elapsed_ms:.2f}ms"
+            )
             return audio_path
-
-        opts = {
-            "outtmpl": str(self.cfg.cache_dir / file_name) + ".%(ext)s",
-            "format": format or "bestaudio/best",
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "flac",
-                    "preferredquality": "0",
-                }
-            ],
-            "cookiefile": None,
-            "http_headers": headers or self.default_headers,
-        }
-        if proxy:
-            opts["proxy"] = proxy
-        if cookiefile and cookiefile.is_file():
-            opts["cookiefile"] = str(cookiefile)
-
-        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-            await to_thread(ydl.download, [url])
-        return audio_path
+        except Exception:
+            elapsed_ms = (perf_counter() - started_at) * 1000
+            logger.warning(
+                f"[astrobot_plugin_parser_timing] 音频下载失败(yt-dlp): url={url}, 耗时 {elapsed_ms:.2f}ms"
+            )
+            raise

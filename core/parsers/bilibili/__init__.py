@@ -1,5 +1,6 @@
 import asyncio
 from re import Match
+from time import perf_counter
 from typing import ClassVar
 
 from bilibili_api import request_settings, select_client
@@ -140,76 +141,83 @@ class BilibiliParser(BaseParser):
             avid (int | None): avid
             page_num (int): 页码
         """
+        started_at = perf_counter()
 
-        from .video import AIConclusion, VideoInfo
+        try:
+            from .video import AIConclusion, VideoInfo
 
-        video = await self._get_video(bvid=bvid, avid=avid)
-        # 转换为 msgspec struct
-        video_info = convert(await video.get_info(), VideoInfo)
-        # 获取简介
-        text = f"简介: {video_info.desc}" if video_info.desc else None
-        # up
-        author = self.create_author(video_info.owner.name, video_info.owner.face)
-        # 处理分 p
-        page_info = video_info.extract_info_with_page(page_num)
+            video = await self._get_video(bvid=bvid, avid=avid)
+            # 转换为 msgspec struct
+            video_info = convert(await video.get_info(), VideoInfo)
+            # 获取简介
+            text = f"简介: {video_info.desc}" if video_info.desc else None
+            # up
+            author = self.create_author(video_info.owner.name, video_info.owner.face)
+            # 处理分 p
+            page_info = video_info.extract_info_with_page(page_num)
 
-        # 获取 AI 总结
-        if self.login._credential:
-            cid = await video.get_cid(page_info.index)
-            ai_conclusion = await video.get_ai_conclusion(cid)
-            ai_conclusion = convert(ai_conclusion, AIConclusion)
-            ai_summary = ai_conclusion.summary
-        else:
-            ai_summary: str = "哔哩哔哩 cookie 未配置或失效, 无法使用 AI 总结"
-
-        url = f"https://bilibili.com/{video_info.bvid}"
-        url += f"?p={page_info.index + 1}" if page_info.index > 0 else ""
-
-        # 视频下载 task
-        async def download_video():
-            output_path = self.cfg.cache_dir / f"{video_info.bvid}-{page_num}.mp4"
-            if output_path.exists():
-                return output_path
-            v_url, a_url = await self.extract_download_urls(
-                video=video, page_index=page_info.index
-            )
-            if page_info.duration > self.cfg.max_duration:
-                raise DurationLimitException
-            if a_url is not None:
-                return await self.downloader.download_av_and_merge(
-                    v_url,
-                    a_url,
-                    output_path=output_path,
-                    headers=self.headers,
-                    proxy=self.proxy,
-                )
+            # 获取 AI 总结
+            if self.login._credential:
+                cid = await video.get_cid(page_info.index)
+                ai_conclusion = await video.get_ai_conclusion(cid)
+                ai_conclusion = convert(ai_conclusion, AIConclusion)
+                ai_summary = ai_conclusion.summary
             else:
-                return await self.downloader.streamd(
-                    v_url,
-                    file_name=output_path.name,
-                    headers=self.headers,
-                    proxy=self.proxy,
+                ai_summary: str = "哔哩哔哩 cookie 未配置或失效, 无法使用 AI 总结"
+
+            url = f"https://bilibili.com/{video_info.bvid}"
+            url += f"?p={page_info.index + 1}" if page_info.index > 0 else ""
+
+            # 视频下载 task
+            async def download_video():
+                output_path = self.cfg.cache_dir / f"{video_info.bvid}-{page_num}.mp4"
+                if output_path.exists():
+                    return output_path
+                v_url, a_url = await self.extract_download_urls(
+                    video=video, page_index=page_info.index
                 )
+                if page_info.duration > self.cfg.max_duration:
+                    raise DurationLimitException
+                if a_url is not None:
+                    return await self.downloader.download_av_and_merge(
+                        v_url,
+                        a_url,
+                        output_path=output_path,
+                        headers=self.headers,
+                        proxy=self.proxy,
+                    )
+                else:
+                    return await self.downloader.streamd(
+                        v_url,
+                        file_name=output_path.name,
+                        headers=self.headers,
+                        proxy=self.proxy,
+                    )
 
-        video_task = asyncio.create_task(download_video())
-        video_content = self.create_video_content(
-            video_task,
-            page_info.cover,
-            page_info.duration,
-        )
+            video_task = asyncio.create_task(download_video())
+            video_content = self.create_video_content(
+                video_task,
+                page_info.cover,
+                page_info.duration,
+            )
 
-        return self.result(
-            url=url,
-            title=page_info.title,
-            timestamp=page_info.timestamp,
-            text=text,
-            author=author,
-            contents=[video_content],
-            extra={
-                "info": ai_summary,
-                "stats": video_info.formatted_stats_info,
-            },
-        )
+            return self.result(
+                url=url,
+                title=page_info.title,
+                timestamp=page_info.timestamp,
+                text=text,
+                author=author,
+                contents=[video_content],
+                extra={
+                    "info": ai_summary,
+                    "stats": video_info.formatted_stats_info,
+                },
+            )
+        finally:
+            elapsed_ms = (perf_counter() - started_at) * 1000
+            logger.debug(
+                f"[astrobot_plugin_parser_timing] bilibili.parse_video 完成: bvid={bvid}, avid={avid}, page_num={page_num}, 耗时 {elapsed_ms:.2f}ms"
+            )
 
     async def parse_dynamic(self, dynamic_id: int):
         """解析动态信息
@@ -217,31 +225,38 @@ class BilibiliParser(BaseParser):
         Args:
             url (str): 动态链接
         """
-        from bilibili_api.dynamic import Dynamic
+        started_at = perf_counter()
+        try:
+            from bilibili_api.dynamic import Dynamic
 
-        from .dynamic import DynamicData
+            from .dynamic import DynamicData
 
-        dynamic_ = Dynamic(dynamic_id, await self.login.credential)
+            dynamic_ = Dynamic(dynamic_id, await self.login.credential)
 
-        dynamic_info = convert(await dynamic_.get_info(), DynamicData).item
-        author = self.create_author(dynamic_info.name, dynamic_info.avatar)
+            dynamic_info = convert(await dynamic_.get_info(), DynamicData).item
+            author = self.create_author(dynamic_info.name, dynamic_info.avatar)
 
-        # 下载图片
-        contents: list[MediaContent] = []
-        for image_url in dynamic_info.image_urls:
-            img_task = self.downloader.download_img(
-                image_url, headers=self.headers, proxy=self.proxy
+            # 下载图片
+            contents: list[MediaContent] = []
+            for image_url in dynamic_info.image_urls:
+                img_task = self.downloader.download_img(
+                    image_url, headers=self.headers, proxy=self.proxy
+                )
+                contents.append(ImageContent(img_task))
+
+            return self.result(
+                title=dynamic_info.title,
+                text=dynamic_info.text,
+                timestamp=dynamic_info.timestamp,
+                author=author,
+                contents=contents,
+                extra={"route": "bilibili_dynamic"},
             )
-            contents.append(ImageContent(img_task))
-
-        return self.result(
-            title=dynamic_info.title,
-            text=dynamic_info.text,
-            timestamp=dynamic_info.timestamp,
-            author=author,
-            contents=contents,
-            extra={"route": "bilibili_dynamic"},
-        )
+        finally:
+            elapsed_ms = (perf_counter() - started_at) * 1000
+            logger.debug(
+                f"[astrobot_plugin_parser_timing] bilibili.parse_dynamic 完成: dynamic_id={dynamic_id}, 耗时 {elapsed_ms:.2f}ms"
+            )
 
     async def parse_opus(self, opus_id: int):
         """解析图文动态信息
@@ -249,18 +264,32 @@ class BilibiliParser(BaseParser):
         Args:
             opus_id (int): 图文动态 id
         """
-        opus = Opus(opus_id, await self.login.credential)
-        return await self._parse_opus_obj(opus)
+        started_at = perf_counter()
+        try:
+            opus = Opus(opus_id, await self.login.credential)
+            return await self._parse_opus_obj(opus)
+        finally:
+            elapsed_ms = (perf_counter() - started_at) * 1000
+            logger.debug(
+                f"[astrobot_plugin_parser_timing] bilibili.parse_opus 完成: opus_id={opus_id}, 耗时 {elapsed_ms:.2f}ms"
+            )
 
     async def parse_read_with_opus(self, read_id: int):
         """解析专栏信息, 使用 Opus 接口
         Args:
             read_id (int): 专栏 id
         """
-        from bilibili_api.article import Article
+        started_at = perf_counter()
+        try:
+            from bilibili_api.article import Article
 
-        article = Article(read_id)
-        return await self._parse_opus_obj(await article.turn_to_opus())
+            article = Article(read_id)
+            return await self._parse_opus_obj(await article.turn_to_opus())
+        finally:
+            elapsed_ms = (perf_counter() - started_at) * 1000
+            logger.debug(
+                f"[astrobot_plugin_parser_timing] bilibili.parse_read_with_opus 完成: read_id={read_id}, 耗时 {elapsed_ms:.2f}ms"
+            )
 
     async def _parse_opus_obj(self, bili_opus: Opus):
         """解析图文动态信息
@@ -308,39 +337,46 @@ class BilibiliParser(BaseParser):
         Returns:
             ParseResult: 解析结果
         """
-        from bilibili_api.live import LiveRoom
+        started_at = perf_counter()
+        try:
+            from bilibili_api.live import LiveRoom
 
-        from .live import RoomData
+            from .live import RoomData
 
-        room = LiveRoom(room_display_id=room_id, credential=await self.login.credential)
-        info_dict = await room.get_room_info()
+            room = LiveRoom(room_display_id=room_id, credential=await self.login.credential)
+            info_dict = await room.get_room_info()
 
-        room_data = convert(info_dict, RoomData)
-        contents: list[MediaContent] = []
-        # 下载封面
-        if cover := room_data.cover:
-            cover_task = self.downloader.download_img(
-                cover, headers=self.headers, proxy=self.proxy
+            room_data = convert(info_dict, RoomData)
+            contents: list[MediaContent] = []
+            # 下载封面
+            if cover := room_data.cover:
+                cover_task = self.downloader.download_img(
+                    cover, headers=self.headers, proxy=self.proxy
+                )
+                contents.append(ImageContent(cover_task))
+
+            # 下载关键帧
+            if keyframe := room_data.keyframe:
+                keyframe_task = self.downloader.download_img(
+                    keyframe, headers=self.headers, proxy=self.proxy
+                )
+                contents.append(ImageContent(keyframe_task))
+
+            author = self.create_author(room_data.name, room_data.avatar)
+
+            url = f"https://www.bilibili.com/blackboard/live/live-activity-player.html?enterTheRoom=0&cid={room_id}"
+            return self.result(
+                url=url,
+                title=room_data.title,
+                text=room_data.detail,
+                contents=contents,
+                author=author,
             )
-            contents.append(ImageContent(cover_task))
-
-        # 下载关键帧
-        if keyframe := room_data.keyframe:
-            keyframe_task = self.downloader.download_img(
-                keyframe, headers=self.headers, proxy=self.proxy
+        finally:
+            elapsed_ms = (perf_counter() - started_at) * 1000
+            logger.debug(
+                f"[astrobot_plugin_parser_timing] bilibili.parse_live 完成: room_id={room_id}, 耗时 {elapsed_ms:.2f}ms"
             )
-            contents.append(ImageContent(keyframe_task))
-
-        author = self.create_author(room_data.name, room_data.avatar)
-
-        url = f"https://www.bilibili.com/blackboard/live/live-activity-player.html?enterTheRoom=0&cid={room_id}"
-        return self.result(
-            url=url,
-            title=room_data.title,
-            text=room_data.detail,
-            contents=contents,
-            author=author,
-        )
 
     async def parse_favlist(self, fav_id: int):
         """解析收藏夹信息
@@ -351,27 +387,34 @@ class BilibiliParser(BaseParser):
         Returns:
             list[GraphicsContent]: 图文内容列表
         """
-        from bilibili_api.favorite_list import get_video_favorite_list_content
+        started_at = perf_counter()
+        try:
+            from bilibili_api.favorite_list import get_video_favorite_list_content
 
-        from .favlist import FavData
+            from .favlist import FavData
 
-        # 只会取一页，20 个
-        fav_dict = await get_video_favorite_list_content(fav_id)
+            # 只会取一页，20 个
+            fav_dict = await get_video_favorite_list_content(fav_id)
 
-        if fav_dict["medias"] is None:
-            raise ParseException("收藏夹内容为空, 或被风控")
+            if fav_dict["medias"] is None:
+                raise ParseException("收藏夹内容为空, 或被风控")
 
-        favdata = convert(fav_dict, FavData)
+            favdata = convert(fav_dict, FavData)
 
-        return self.result(
-            title=favdata.title,
-            timestamp=favdata.timestamp,
-            author=self.create_author(favdata.info.upper.name, favdata.info.upper.face),
-            contents=[
-                self.create_graphics_content(fav.cover, fav.desc)
-                for fav in favdata.medias
-            ],
-        )
+            return self.result(
+                title=favdata.title,
+                timestamp=favdata.timestamp,
+                author=self.create_author(favdata.info.upper.name, favdata.info.upper.face),
+                contents=[
+                    self.create_graphics_content(fav.cover, fav.desc)
+                    for fav in favdata.medias
+                ],
+            )
+        finally:
+            elapsed_ms = (perf_counter() - started_at) * 1000
+            logger.debug(
+                f"[astrobot_plugin_parser_timing] bilibili.parse_favlist 完成: fav_id={fav_id}, 耗时 {elapsed_ms:.2f}ms"
+            )
 
     async def _get_video(
         self, *, bvid: str | None = None, avid: int | None = None
@@ -404,37 +447,44 @@ class BilibiliParser(BaseParser):
             avid (int | None): avid
             page_index (int): 页索引 = 页码 - 1
         """
+        started_at = perf_counter()
 
-        from bilibili_api.video import (
-            AudioStreamDownloadURL,
-            VideoDownloadURLDataDetecter,
-            VideoStreamDownloadURL,
-        )
+        try:
+            from bilibili_api.video import (
+                AudioStreamDownloadURL,
+                VideoDownloadURLDataDetecter,
+                VideoStreamDownloadURL,
+            )
 
-        if video is None:
-            video = await self._get_video(bvid=bvid, avid=avid)
+            if video is None:
+                video = await self._get_video(bvid=bvid, avid=avid)
 
-        # 获取下载数据
-        download_url_data = await video.get_download_url(page_index=page_index)
-        detecter = VideoDownloadURLDataDetecter(download_url_data)
-        streams = detecter.detect_best_streams(
-            video_max_quality=self.video_quality,
-            codecs=[self.video_codecs],
-            no_dolby_video=True,
-            no_hdr=True,
-        )
-        video_stream = streams[0]
-        if not isinstance(video_stream, VideoStreamDownloadURL):
-            raise DownloadException("未找到可下载的视频流")
-        logger.debug(
-            f"视频流质量: {video_stream.video_quality.name}, 编码: {video_stream.video_codecs}"
-        )
+            # 获取下载数据
+            download_url_data = await video.get_download_url(page_index=page_index)
+            detecter = VideoDownloadURLDataDetecter(download_url_data)
+            streams = detecter.detect_best_streams(
+                video_max_quality=self.video_quality,
+                codecs=[self.video_codecs],
+                no_dolby_video=True,
+                no_hdr=True,
+            )
+            video_stream = streams[0]
+            if not isinstance(video_stream, VideoStreamDownloadURL):
+                raise DownloadException("未找到可下载的视频流")
+            logger.debug(
+                f"视频流质量: {video_stream.video_quality.name}, 编码: {video_stream.video_codecs}"
+            )
 
-        audio_stream = streams[1]
-        if not isinstance(audio_stream, AudioStreamDownloadURL):
-            return video_stream.url, None
-        logger.debug(f"音频流质量: {audio_stream.audio_quality.name}")
-        return video_stream.url, audio_stream.url
+            audio_stream = streams[1]
+            if not isinstance(audio_stream, AudioStreamDownloadURL):
+                return video_stream.url, None
+            logger.debug(f"音频流质量: {audio_stream.audio_quality.name}")
+            return video_stream.url, audio_stream.url
+        finally:
+            elapsed_ms = (perf_counter() - started_at) * 1000
+            logger.debug(
+                f"[astrobot_plugin_parser_timing] bilibili.extract_download_urls 完成: bvid={bvid}, avid={avid}, page_index={page_index}, 耗时 {elapsed_ms:.2f}ms"
+            )
 
 
 

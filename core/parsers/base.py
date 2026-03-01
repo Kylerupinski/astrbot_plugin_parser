@@ -5,10 +5,12 @@ from asyncio import Task, TimeoutError, sleep
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from re import Match, Pattern, compile
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
 from typing_extensions import Unpack
+from astrbot.api import logger
 
 from ..config import ParserItem, PluginConfig
 from ..constants import ANDROID_HEADER, COMMON_HEADER, IOS_HEADER
@@ -142,7 +144,21 @@ class BaseParser:
         Raises:
             ParseException: 解析失败时抛出
         """
-        return await self._handlers[keyword](self, searched)
+        started_at = perf_counter()
+        try:
+            result = await self._handlers[keyword](self, searched)
+        except Exception:
+            elapsed_ms = (perf_counter() - started_at) * 1000
+            logger.debug(
+                f"[astrobot_plugin_parser_timing] {self.platform.name} 模块解析失败: keyword={keyword}, 耗时 {elapsed_ms:.2f}ms"
+            )
+            raise
+
+        elapsed_ms = (perf_counter() - started_at) * 1000
+        logger.debug(
+            f"[astrobot_plugin_parser_timing] {self.platform.name} 模块解析完成: keyword={keyword}, 耗时 {elapsed_ms:.2f}ms"
+        )
+        return result
 
     async def parse_with_redirect(
         self,

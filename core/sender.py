@@ -1,5 +1,6 @@
 from itertools import chain
 from pathlib import Path
+from time import perf_counter
 from astrbot.api import logger
 
 from astrbot.core.message.components import (
@@ -51,6 +52,13 @@ class MessageSender:
     def __init__(self, config: PluginConfig, renderer: Renderer):
         self.cfg = config
         self.renderer = renderer
+
+    def _log_elapsed_before_send(self, result: ParseResult, block_desc: str) -> None:
+        received_at = result.extra.get("_received_at_perf")
+        if not isinstance(received_at, (int, float)):
+            return
+        elapsed_ms = (perf_counter() - float(received_at)) * 1000
+        logger.info(f"[astrobot_plugin_parser_timing] 收到消息到发送消息包前耗时 {elapsed_ms:.2f}ms, block={block_desc}")
 
     def _build_send_plan(self, result: ParseResult) -> dict:
         """
@@ -110,6 +118,7 @@ class MessageSender:
             return
 
         if image_path := await self.renderer.render_card(result):
+            self._log_elapsed_before_send(result, "preview_card")
             await event.send(event.chain_result([Image(str(image_path))]))
 
 
@@ -254,8 +263,10 @@ class MessageSender:
         if segs:
             if plan["force_merge"] and len(segs) > 1:
                 logger.info(f"正在发送合并后的消息包，共 {len(segs)} 个消息包")
-                for seg in segs:
+                for i, seg in enumerate(segs, start=1):
+                    self._log_elapsed_before_send(result, f"merged_{i}/{len(segs)}")
                     await event.send(event.chain_result([seg]))
             else:
                 logger.info(f"正在发送消息，共 {len(segs)} 条消息")
+                self._log_elapsed_before_send(result, f"normal_{len(segs)}")
                 await event.send(event.chain_result(segs))

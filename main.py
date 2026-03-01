@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+from time import perf_counter
 
 from astrbot.api import logger
 from astrbot.api.event import filter
@@ -114,6 +115,7 @@ class ParserPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
         """消息的统一入口"""
+        parse_started_at = perf_counter()
         umo = event.unified_msg_origin
 
         # 白名单
@@ -159,24 +161,35 @@ class ParserPlugin(Star):
             return
         logger.debug(f"匹配结果: {keyword}, {searched}")
 
-        # 仲裁机制
-        if isinstance(event, AiocqhttpMessageEvent) and not event.is_private_chat():
-            raw = event.message_obj.raw_message
-            if not isinstance(raw, dict):
-                logger.warning(f"Unexpected raw_message type: {type(raw)}")
-                return
-            is_win = await self.arbiter.compete(
-                bot=event.bot,
-                ctx=ArbiterContext(
-                    message_id=int(raw["message_id"]),
-                    msg_time=int(raw["time"]),
-                    self_id=int(raw["self_id"]),
-                ),
-            )
-            if not is_win:
-                logger.debug("Bot在仲裁中输了, 跳过解析")
-                return
-            logger.debug("Bot在仲裁中胜出, 准备解析...")
+        # 仲裁机制（可开关）
+        if self.cfg.arbiter:
+            if isinstance(event, AiocqhttpMessageEvent) and not event.is_private_chat():
+                raw = event.message_obj.raw_message
+                if not isinstance(raw, dict):
+                    logger.warning(f"Unexpected raw_message type: {type(raw)}")
+                    return
+                arbiter_started_at = perf_counter()
+                is_win = await self.arbiter.compete(
+                    bot=event.bot,
+                    ctx=ArbiterContext(
+                        message_id=int(raw["message_id"]),
+                        msg_time=int(raw["time"]),
+                        self_id=int(raw["self_id"]),
+                    ),
+                )
+                arbiter_elapsed_ms = (perf_counter() - arbiter_started_at) * 1000
+                if not is_win:
+                    logger.debug(
+                        f"[astrobot_plugin_parser_timing] 仲裁耗时 {arbiter_elapsed_ms:.2f}ms, 结果=failed"
+                    )
+                    logger.debug("Bot在仲裁中输了, 跳过解析")
+                    return
+                logger.debug(
+                    f"[astrobot_plugin_parser_timing] 仲裁耗时 {arbiter_elapsed_ms:.2f}ms, 结果=success"
+                )
+                logger.debug("Bot在仲裁中胜出, 准备解析...")
+        else:
+            logger.debug("仲裁机制已关闭，跳过仲裁")
 
         # 基于link防抖
         link = searched.group(0)
@@ -185,7 +198,23 @@ class ParserPlugin(Star):
             return
 
         # 解析
-        parse_res = await self.parser_map[keyword].parse(keyword, searched)
+        parser = self.parser_map[keyword]
+        try:
+            parse_res = await parser.parse(keyword, searched)
+        except Exception:
+            elapsed_ms = (perf_counter() - parse_started_at) * 1000
+            logger.debug(
+                f"[astrobot_plugin_parser_timing] 从收到消息到解析失败耗时 {elapsed_ms:.2f}ms, keyword={keyword}, parser={parser.platform.name}"
+            )
+            raise
+
+        elapsed_ms = (perf_counter() - parse_started_at) * 1000
+        logger.debug(
+            f"[astrobot_plugin_parser_timing] 从收到消息到解析完成耗时 {elapsed_ms:.2f}ms, keyword={keyword}, parser={parser.platform.name}"
+        )
+
+        # 传递“收到消息时刻”给 sender，用于统计端到端发送耗时
+        parse_res.extra["_received_at_perf"] = parse_started_at
 
         # 基于资源ID防抖
         resource_id = parse_res.get_resource_id()

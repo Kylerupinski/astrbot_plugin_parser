@@ -81,7 +81,7 @@ class VideoInfo(Struct):
             secs = seconds % 60
             if hours > 0:
                 return f"{hours}:{minutes:02d}:{secs:02d}"
-            return f"{minutes}:{secs:02d}"
+            return f"{minutes:02d}:{secs:02d}"
 
         # 定义需要展示的数据及其显示名称
         stats_mapping = [

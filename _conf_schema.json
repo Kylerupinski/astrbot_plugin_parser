@@ -13,7 +13,7 @@
     },
     "arbiter": {
         "description": "仲裁机制",
-        "hint": "仲裁机制：一个确保群内只有一个 Bot 对链接进行解析的机制，利用 QQ 贴表情来实现。注意：此开关无效，所有插件使用者强制启用仲裁机制，以确保所有 Bot 遵循本插件的仲裁协议",
+        "hint": "仲裁机制：一个确保群内只有一个 Bot 对链接进行解析的机制，利用 QQ 贴表情来实现。开启后在 aiocqhttp 群聊场景执行仲裁，关闭后将跳过仲裁直接解析。【强烈建议开启，若能保证群内只有一个解析Bot可关闭节约解析时间】",
         "type": "bool",
         "default": true
     },
@@ -60,7 +60,7 @@
         "description": "单条重媒体仍渲染卡片",
         "hint": "重媒体是指：视频、音频、文件。重媒体下载和发送较为耗时，有需者可以打开此开关让插件先渲染一个信息卡片发出来，追求简洁者请不要开启",
         "type": "bool",
-        "default": false
+        "default": true
     },
     "forward_threshold": {
         "description": "转发阈值",
@@ -71,7 +71,7 @@
             "max": 10,
             "step": 1
         },
-        "default": 0
+        "default": 2
     },
     "show_download_fail_tip": {
         "description": "提示下载失败项",
