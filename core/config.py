@@ -197,6 +197,7 @@ class PluginConfig(ConfigNode):
 
     audio_to_file: bool
     single_heavy_render_card: bool
+    single_heavy_plain_preview: bool
     forward_threshold: int
 
     show_download_fail_tip: bool

@@ -1,15 +1,16 @@
-from asyncio import Task, TimeoutError, create_task, gather, sleep, to_thread
+from asyncio import Task, TimeoutError, create_subprocess_exec, create_task, gather, sleep, subprocess, to_thread
 from collections.abc import Callable, Coroutine
 from functools import wraps
 from pathlib import Path
 from time import perf_counter
-from typing import Any, ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypeVar, cast
 
 import aiofiles
 import yt_dlp
 from aiohttp import ClientError, ClientSession, ClientTimeout
 from msgspec import Struct, convert
 from tqdm.asyncio import tqdm
+from yt_dlp.utils import DownloadError
 
 from astrbot.api import logger
 
@@ -322,21 +323,15 @@ class Downloader:
     ) -> VideoInfo:
         if (info := self.info_cache.get(url)) is not None:
             return info
-        opts = {
-            "quiet": True,
-            "skip_download": True,
-            "http_headers": headers or self.default_headers,
-        }
-        if proxy:
-            opts["proxy"] = proxy
-        if cookiefile and cookiefile.is_file():
-            opts["cookiefile"] = str(cookiefile)
-        if format:
-            opts["format"] = format
-        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-            raw = await to_thread(ydl.extract_info, url, download=False)
-            if not raw:
-                raise ParseException("获取视频信息失败")
+        opts = self._build_ytdlp_info_opts(
+            headers=headers,
+            proxy=proxy,
+            cookiefile=cookiefile,
+            format=format,
+        )
+        raw = await self._ytdlp_extract_info_with_fallback(url, opts, cookiefile)
+        if not raw:
+            raise ParseException("获取视频信息失败")
         info = convert(raw, VideoInfo)
         self.info_cache[url] = info
         return info
@@ -350,23 +345,16 @@ class Downloader:
         proxy: str | None = None,
         format: str | None = None,
     ) -> dict[str, Any]:
-        opts = {
-            "quiet": True,
-            "skip_download": True,
-            "http_headers": headers or self.default_headers,
-        }
-        if proxy:
-            opts["proxy"] = proxy
-        if cookiefile and cookiefile.is_file():
-            opts["cookiefile"] = str(cookiefile)
-        if format:
-            opts["format"] = format
-
-        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-            raw = await to_thread(ydl.extract_info, url, download=False)
-            if not isinstance(raw, dict):
-                raise ParseException("yt-dlp 返回数据异常")
-            return raw  # type: ignore
+        opts = self._build_ytdlp_info_opts(
+            headers=headers,
+            proxy=proxy,
+            cookiefile=cookiefile,
+            format=format,
+        )
+        raw = await self._ytdlp_extract_info_with_fallback(url, opts, cookiefile)
+        if not isinstance(raw, dict):
+            raise ParseException("yt-dlp 返回数据异常")
+        return raw  # type: ignore
 
     @auto_task
     async def ytdlp_download_video(
@@ -396,17 +384,20 @@ class Downloader:
                 )
                 return video_path
 
-            opts = {
+            opts: dict[str, Any] = {
                 "outtmpl": str(video_path),
                 "merge_output_format": "mp4",
                 # "format": f"bv[filesize<={info.duration // 10 + 10}M]+ba/b[filesize<={info.duration // 8 + 10}M]",
                 # "format": "bv*[height<=720]+ba/b[height<=720]",
                 "format": format or "best",
+                "ignoreconfig": True,
                 "postprocessors": [
-                    {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
+                    {"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}
                 ],
-                "http_headers": headers or self.default_headers,
+                "noplaylist": True,
             }
+            if headers:
+                opts["http_headers"] = headers
             if proxy:
                 opts["proxy"] = proxy
             if cookiefile and cookiefile.is_file():
@@ -414,8 +405,13 @@ class Downloader:
             if node:
                 opts["js_runtimes"] = {"node": {}}
 
-            with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-                await to_thread(ydl.download, [url])
+            logger.debug(
+                "YouTube 下载使用格式: %s",
+                opts.get("format"),
+            )
+
+            await self._ytdlp_download_with_fallback(url, opts, cookiefile)
+            await self._log_video_resolution(video_path)
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.info(
                 f"[astrobot_plugin_parser_timing] 视频下载完成(yt-dlp): path={video_path.name}, 耗时 {elapsed_ms:.2f}ms"
@@ -450,9 +446,10 @@ class Downloader:
                 )
                 return audio_path
 
-            opts = {
+            opts: dict[str, Any] = {
                 "outtmpl": str(self.cfg.cache_dir / file_name) + ".%(ext)s",
                 "format": format or "bestaudio/best",
+                "ignoreconfig": True,
                 "postprocessors": [
                     {
                         "key": "FFmpegExtractAudio",
@@ -461,15 +458,16 @@ class Downloader:
                     }
                 ],
                 "cookiefile": None,
-                "http_headers": headers or self.default_headers,
+                "noplaylist": True,
             }
+            if headers:
+                opts["http_headers"] = headers
             if proxy:
                 opts["proxy"] = proxy
             if cookiefile and cookiefile.is_file():
                 opts["cookiefile"] = str(cookiefile)
 
-            with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-                await to_thread(ydl.download, [url])
+            await self._ytdlp_download_with_fallback(url, opts, cookiefile)
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.info(
                 f"[astrobot_plugin_parser_timing] 音频下载完成(yt-dlp): path={audio_path.name}, 耗时 {elapsed_ms:.2f}ms"
@@ -481,3 +479,191 @@ class Downloader:
                 f"[astrobot_plugin_parser_timing] 音频下载失败(yt-dlp): url={url}, 耗时 {elapsed_ms:.2f}ms"
             )
             raise
+
+    @staticmethod
+    def _is_youtube_url(url: str) -> bool:
+        return "youtu.be/" in url or "youtube.com/" in url
+
+    @staticmethod
+    def _is_youtube_player_response_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return (
+            "[youtube]" in msg
+            and "failed to extract any player response" in msg
+        )
+
+    @staticmethod
+    def _is_format_unavailable_error(exc: Exception) -> bool:
+        return "requested format is not available" in str(exc).lower()
+
+    def _build_ytdlp_info_opts(
+        self,
+        *,
+        headers: dict[str, str] | None,
+        proxy: str | None,
+        cookiefile: Path | None,
+        format: str | None,
+    ) -> dict[str, Any]:
+        opts: dict[str, Any] = {
+            "quiet": True,
+            "skip_download": True,
+            "noplaylist": True,
+            "ignoreconfig": True,
+        }
+        if headers:
+            opts["http_headers"] = headers
+        if proxy:
+            opts["proxy"] = proxy
+        if cookiefile and cookiefile.is_file():
+            opts["cookiefile"] = str(cookiefile)
+        if format:
+            opts["format"] = format
+        return opts
+
+    async def _ytdlp_extract_info_with_fallback(
+        self,
+        url: str,
+        opts: dict[str, Any],
+        cookiefile: Path | None,
+    ) -> dict[str, Any]:
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+                raw = await to_thread(ydl.extract_info, url, download=False)
+                if not isinstance(raw, dict):
+                    raise ParseException("yt-dlp 返回数据异常")
+                return cast(dict[str, Any], raw)
+        except DownloadError as exc:
+            if (
+                self._is_youtube_url(url)
+                and self._is_format_unavailable_error(exc)
+            ):
+                retry_opts = opts.copy()
+                retry_opts.pop("format", None)
+                logger.warning(
+                    "YouTube 提取命中不可用格式，移除 format 后重试: %s",
+                    str(exc),
+                )
+                with yt_dlp.YoutubeDL(retry_opts) as ydl:  # type: ignore
+                    raw = await to_thread(ydl.extract_info, url, download=False)
+                    if not isinstance(raw, dict):
+                        raise ParseException("yt-dlp 返回数据异常")
+                    return cast(dict[str, Any], raw)
+
+            if not (
+                self._is_youtube_url(url)
+                and cookiefile
+                and cookiefile.is_file()
+                and self._is_youtube_player_response_error(exc)
+            ):
+                raise
+
+            retry_opts = opts.copy()
+            retry_opts.pop("cookiefile", None)
+            logger.warning(
+                "YouTube 提取失败，尝试忽略 cookie 重试: %s",
+                str(exc),
+            )
+            try:
+                with yt_dlp.YoutubeDL(retry_opts) as ydl:  # type: ignore
+                    raw = await to_thread(ydl.extract_info, url, download=False)
+                    if not isinstance(raw, dict):
+                        raise ParseException("yt-dlp 返回数据异常")
+                    return cast(dict[str, Any], raw)
+            except DownloadError as retry_exc:
+                if not self._is_youtube_player_response_error(retry_exc):
+                    raise
+
+                last_retry_opts = retry_opts.copy()
+                last_retry_opts["extractor_args"] = {
+                    "youtube": {
+                        "player_client": ["web", "ios", "android"],
+                    }
+                }
+                logger.warning(
+                    "YouTube 提取二次重试，启用 player_client 兜底: %s",
+                    str(retry_exc),
+                )
+                with yt_dlp.YoutubeDL(last_retry_opts) as ydl:  # type: ignore
+                    raw = await to_thread(ydl.extract_info, url, download=False)
+                    if not isinstance(raw, dict):
+                        raise ParseException("yt-dlp 返回数据异常")
+                    return cast(dict[str, Any], raw)
+
+    async def _ytdlp_download_with_fallback(
+        self,
+        url: str,
+        opts: dict[str, Any],
+        cookiefile: Path | None,
+    ) -> None:
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+                await to_thread(ydl.download, [url])
+        except DownloadError as exc:
+            if (
+                self._is_youtube_url(url)
+                and self._is_format_unavailable_error(exc)
+            ):
+                retry_opts = opts.copy()
+                retry_opts["format"] = "bestvideo+bestaudio/best"
+                logger.warning(
+                    "YouTube 下载命中不可用格式，切换高质量兜底格式重试: %s",
+                    str(exc),
+                )
+                with yt_dlp.YoutubeDL(retry_opts) as ydl:  # type: ignore
+                    await to_thread(ydl.download, [url])
+                return
+
+            if not (
+                self._is_youtube_url(url)
+                and cookiefile
+                and cookiefile.is_file()
+                and self._is_youtube_player_response_error(exc)
+            ):
+                raise
+
+            retry_opts = opts.copy()
+            retry_opts.pop("cookiefile", None)
+            retry_opts["format"] = retry_opts.get("format") or "bestvideo+bestaudio/best"
+            logger.warning(
+                "YouTube 下载失败，尝试忽略 cookie 重试: %s",
+                str(exc),
+            )
+            with yt_dlp.YoutubeDL(retry_opts) as ydl:  # type: ignore
+                await to_thread(ydl.download, [url])
+
+    async def _log_video_resolution(self, path: Path) -> None:
+        if not path.exists():
+            return
+        try:
+            proc = await create_subprocess_exec(
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height,r_frame_rate",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode != 0:
+                return
+
+            lines = [line.strip() for line in stdout.decode(errors="ignore").splitlines() if line.strip()]
+            if len(lines) < 2:
+                return
+            width, height = lines[0], lines[1]
+            fps = lines[2] if len(lines) >= 3 else "unknown"
+            logger.info(
+                "YouTube 下载文件信息: %s x %s, fps=%s, file=%s",
+                width,
+                height,
+                fps,
+                path.name,
+            )
+        except Exception:
+            return

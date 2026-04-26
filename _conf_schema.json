@@ -62,6 +62,12 @@
         "type": "bool",
         "default": true
     },
+    "single_heavy_plain_preview": {
+        "description": "单条重媒体纯输出预览",
+        "hint": "开启后，单条重媒体将不再渲染卡片，改为发送标题、作者、简介和封面（若有）的纯输出预览",
+        "type": "bool",
+        "default": false
+    },
     "forward_threshold": {
         "description": "转发阈值",
         "hint": "硬性要求：解析生成的消息条数达到此阈值时，将消息合并转发",

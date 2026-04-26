@@ -107,6 +107,7 @@ class VideoInfo(Struct):
                 result_parts.append(f"{display_name} {formatted_value} ({value})")
             else:
                 result_parts.append(f"{display_name} {value}")
+        result_parts.append(f"\n🔗https://www.bilibili.com/video/{self.bvid}")
 
         return " ".join(result_parts)
 

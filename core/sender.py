@@ -83,7 +83,13 @@ class MessageSender:
 
         # 仅在“单一重媒体且无其他内容”时，才允许渲染卡片
         is_single_heavy = len(heavy) == 1 and not light
-        render_card = is_single_heavy and self.cfg.single_heavy_render_card
+        plain_preview = is_single_heavy and self.cfg.single_heavy_plain_preview
+        # 纯输出预览开启时，禁用卡片渲染预览
+        render_card = (
+            is_single_heavy
+            and self.cfg.single_heavy_render_card
+            and not plain_preview
+        )
         # 实际消息段数量（卡片也算一个段）
         seg_count = len(light) + len(heavy) + (1 if render_card else 0)
 
@@ -94,10 +100,69 @@ class MessageSender:
             "light": light,
             "heavy": heavy,
             "render_card": render_card,
+            "plain_preview": plain_preview,
             # 预览卡片：仅在“渲染卡片 + 不合并”时独立发送
             "preview_card": render_card and not force_merge,
             "force_merge": force_merge,
         }
+
+    @staticmethod
+    def _is_bili_video_result(result: ParseResult) -> bool:
+        return (
+            result.platform.name == "bilibili"
+            and any(isinstance(cont, VideoContent) for cont in result.contents)
+        )
+
+
+    async def _build_plain_preview_segments(
+        self,
+        result: ParseResult,
+    ) -> list[BaseMessageComponent]:
+        """构建单条重媒体的纯输出预览消息段"""
+        segs: list[BaseMessageComponent] = []
+        lines: list[str] = []
+
+        is_bili_video = self._is_bili_video_result(result)
+
+        # B站视频场景
+        if is_bili_video:
+            if result.title:
+                segs.append(Plain(f"{result.title}"))
+            if result.author and result.author.name:
+                segs.append(Plain(f"{result.author.name}"))
+
+            if result.text:
+                segs.append(Plain(f"{result.text}"))
+
+            if cover_path := await result.cover_path:
+                # segs.append(Plain(""))
+                segs.append(Image(str(cover_path)))
+
+            if stats_info := result.extra.get("stats"):
+                # segs.append(Plain("b站视频信息："))
+                segs.append(Plain(str(stats_info)))
+
+            return segs
+
+        if result.title:
+            segs.append(Plain(f"{result.title}"))
+
+        if result.author and result.author.name:
+            segs.append(Plain(f"{result.author.name}"))
+
+        summary = result.text
+        if not summary and result.author:
+            summary = result.author.description
+        if summary:
+            lines.append(f"{summary}")
+
+        if lines:
+            segs.append(Plain("\n".join(lines)))
+
+        if cover_path := await result.cover_path:
+            segs.append(Image(str(cover_path)))
+
+        return segs
 
 
     async def _send_preview_card(
@@ -114,12 +179,23 @@ class MessageSender:
         - 未触发合并转发
         - 卡片作为“预览”，不与正文混合
         """
-        if not plan["preview_card"]:
+        if plan["plain_preview"]:
+            segs = await self._build_plain_preview_segments(result)
+            if segs:
+                self._log_elapsed_before_send(result, "preview_plain")
+                merged_preview = self._merge_segments_if_needed(
+                    event=event,
+                    segs=segs,
+                    force_merge=True,
+                )
+                for seg in merged_preview:
+                    await event.send(event.chain_result([seg]))
             return
 
-        if image_path := await self.renderer.render_card(result):
-            self._log_elapsed_before_send(result, "preview_card")
-            await event.send(event.chain_result([Image(str(image_path))]))
+        if plan["preview_card"]:
+            if image_path := await self.renderer.render_card(result):
+                self._log_elapsed_before_send(result, "preview_card")
+                await event.send(event.chain_result([Image(str(image_path))]))
 
 
     async def _build_segments(
@@ -135,10 +211,6 @@ class MessageSender:
         - 转换为 AstrBot 消息组件
         """
         segs: list[BaseMessageComponent] = []
-
-        # 标题默认发送
-        if result.title:
-            segs.append(Plain(result.title))
 
         # 单个 text / 单个 textnode 场景：无媒体内容时发送正文
         if result.text and not plan["light"] and not plan["heavy"]:
@@ -196,7 +268,9 @@ class MessageSender:
                     segs.append(File(name=path.name, file=str(path)))
 
         # 统计信息仅在消息层发送
-        if stats_info := result.extra.get("stats"):
+        if (
+            stats_info := result.extra.get("stats")
+        ) and not (plan["plain_preview"] and self._is_bili_video_result(result)):
             segs.append(Plain(str(stats_info)))
 
         return segs
@@ -237,6 +311,29 @@ class MessageSender:
         return merged_batches
 
 
+    def _split_video_segments(
+        self,
+        segs: list[BaseMessageComponent],
+    ) -> tuple[list[BaseMessageComponent], list[Video]]:
+        """
+        将视频消息段拆分出来，确保视频始终最后单独发送。
+
+        返回值：
+        - non_video_segs: 非视频消息段
+        - video_segs: 视频消息段（保持原顺序）
+        """
+        non_video_segs: list[BaseMessageComponent] = []
+        video_segs: list[Video] = []
+
+        for seg in segs:
+            if isinstance(seg, Video):
+                video_segs.append(seg)
+            else:
+                non_video_segs.append(seg)
+
+        return non_video_segs, video_segs
+
+
     async def send_parse_result(
         self,
         event: AstrMessageEvent,
@@ -258,15 +355,23 @@ class MessageSender:
 
         segs = await self._build_segments(result, plan)
 
-        segs = self._merge_segments_if_needed(event, segs, plan["force_merge"])
+        normal_segs, video_segs = self._split_video_segments(segs)
 
-        if segs:
-            if plan["force_merge"] and len(segs) > 1:
-                logger.info(f"正在发送合并后的消息包，共 {len(segs)} 个消息包")
-                for i, seg in enumerate(segs, start=1):
-                    self._log_elapsed_before_send(result, f"merged_{i}/{len(segs)}")
+        normal_segs = self._merge_segments_if_needed(event, normal_segs, plan["force_merge"])
+
+        if normal_segs:
+            if plan["force_merge"] and len(normal_segs) > 1:
+                logger.info(f"正在发送合并后的消息包，共 {len(normal_segs)} 个消息包")
+                for i, seg in enumerate(normal_segs, start=1):
+                    self._log_elapsed_before_send(result, f"merged_{i}/{len(normal_segs)}")
                     await event.send(event.chain_result([seg]))
             else:
-                logger.info(f"正在发送消息，共 {len(segs)} 条消息")
-                self._log_elapsed_before_send(result, f"normal_{len(segs)}")
-                await event.send(event.chain_result(segs))
+                logger.info(f"正在发送消息，共 {len(normal_segs)} 条消息")
+                self._log_elapsed_before_send(result, f"normal_{len(normal_segs)}")
+                await event.send(event.chain_result(normal_segs))
+
+        if video_segs:
+            logger.info(f"正在发送视频消息，共 {len(video_segs)} 条（始终单独发送且置后）")
+            for i, video in enumerate(video_segs, start=1):
+                self._log_elapsed_before_send(result, f"video_{i}/{len(video_segs)}")
+                await event.send(event.chain_result([video]))
