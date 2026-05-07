@@ -129,7 +129,7 @@ class MessageSender:
             if result.title:
                 segs.append(Plain(f"{result.title}"))
             if result.author and result.author.name:
-                segs.append(Plain(f"{result.author.name}"))
+                segs.append(Plain(f"UP主：{result.author.name}"))
 
             if result.text:
                 segs.append(Plain(f"{result.text}"))
@@ -303,7 +303,7 @@ class MessageSender:
             chunk = segs[i : i + chunk_size]
             nodes = Nodes([])
             for seg in chunk:
-                nodes.nodes.append(Node(uin="1403206256", name="樱花朝日", content=[seg]))
+                nodes.nodes.append(Node(uin="10000", name="樱花朝日", content=[seg]))
             merged_batches.append(nodes)
 
         logger.info(f"合并后的消息包的数量: {len(merged_batches)}")
