@@ -303,7 +303,7 @@ class MessageSender:
             chunk = segs[i : i + chunk_size]
             nodes = Nodes([])
             for seg in chunk:
-                nodes.nodes.append(Node(uin="10000", name="樱花朝日", content=[seg]))
+                nodes.nodes.append(Node(uin="10086", name="樱花朝日", content=[seg]))
             merged_batches.append(nodes)
 
         logger.info(f"合并后的消息包的数量: {len(merged_batches)}")

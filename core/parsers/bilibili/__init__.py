@@ -174,7 +174,7 @@ class BilibiliParser(BaseParser):
                 if output_path.exists():
                     return output_path
                 v_url, a_url = await self.extract_download_urls(
-                    video=video, page_index=page_info.index
+                    video=video, bvid=bvid, page_index=page_info.index
                 )
                 if page_info.duration > self.cfg.max_duration:
                     raise DurationLimitException
@@ -462,12 +462,23 @@ class BilibiliParser(BaseParser):
             # 获取下载数据
             download_url_data = await video.get_download_url(page_index=page_index)
             detecter = VideoDownloadURLDataDetecter(download_url_data)
-            streams = detecter.detect_best_streams(
-                video_max_quality=self.video_quality,
-                codecs=[self.video_codecs],
-                no_dolby_video=True,
-                no_hdr=True,
-            )
+
+            # bilibili_api 库 bug: 部分视频的 video_codecs 为 None，
+            # detect_best_streams 内部排序时访问 .value 会抛出 AttributeError
+            try:
+                streams = detecter.detect_best_streams(
+                    video_max_quality=self.video_quality,
+                    codecs=[self.video_codecs],
+                    no_dolby_video=True,
+                    no_hdr=True,
+                )
+            except AttributeError:
+                logger.warning(
+                    "detect_best_streams 失败 (bilibili_api bug: video_codecs=None)，"
+                    "回退到手动提取下载链接..."
+                )
+                return self._manual_extract_urls(download_url_data)
+
             video_stream = streams[0]
             if not isinstance(video_stream, VideoStreamDownloadURL):
                 raise DownloadException("未找到可下载的视频流")
@@ -486,5 +497,49 @@ class BilibiliParser(BaseParser):
                 f"[astrobot_plugin_parser_timing] bilibili.extract_download_urls 完成: bvid={bvid}, avid={avid}, page_index={page_index}, 耗时 {elapsed_ms:.2f}ms"
             )
 
+    def _manual_extract_urls(
+        self, download_url_data: dict
+    ) -> tuple[str, str | None]:
+        """手动从原始下载数据中提取最佳视频/音频 URL
+
+        绕过 bilibili_api 的 detect_best_streams 方法，
+        用于处理 video_codecs 为 None 导致的 AttributeError。
+        """
+        dash = download_url_data.get("dash", {})
+        videos: list[dict] = dash.get("video", [])
+        audios: list[dict] = dash.get("audio", [])
+
+        if not videos:
+            raise DownloadException("未找到可下载的视频流")
+
+        # 过滤掉 codecs 为 None 或缺少 base_url 的流
+        valid_videos = [
+            v for v in videos
+            if v.get("codecs") is not None and v.get("base_url")
+        ]
+        if not valid_videos:
+            raise DownloadException("未找到有效的视频流 (codecs 均为空)")
+
+        # 按质量 id 降序排列，取最高质量
+        best_video = max(valid_videos, key=lambda v: v.get("id", 0))
+        v_url: str = best_video["base_url"]
+        logger.debug(
+            f"[fallback] 视频流: id={best_video.get('id')}, codecs={best_video.get('codecs')}"
+        )
+
+        # 音频流
+        valid_audios = [
+            a for a in audios
+            if a.get("codecs") is not None and a.get("base_url")
+        ]
+        if valid_audios:
+            best_audio = max(valid_audios, key=lambda a: a.get("id", 0))
+            a_url: str = best_audio["base_url"]
+            logger.debug(
+                f"[fallback] 音频流: id={best_audio.get('id')}, codecs={best_audio.get('codecs')}"
+            )
+            return v_url, a_url
+
+        return v_url, None
 
 
