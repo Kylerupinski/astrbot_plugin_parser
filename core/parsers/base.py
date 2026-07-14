@@ -150,13 +150,13 @@ class BaseParser:
         except Exception:
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.debug(
-                f"[astrobot_plugin_parser_timing] {self.platform.name} 模块解析失败: keyword={keyword}, 耗时 {elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] {self.platform.name} 模块解析失败: keyword={keyword}, 耗时 {elapsed_ms:.2f}ms"
             )
             raise
 
         elapsed_ms = (perf_counter() - started_at) * 1000
         logger.debug(
-            f"[astrobot_plugin_parser_timing] {self.platform.name} 模块解析完成: keyword={keyword}, 耗时 {elapsed_ms:.2f}ms"
+            f"[astrbot_plugin_parser_timing] {self.platform.name} 模块解析完成: keyword={keyword}, 耗时 {elapsed_ms:.2f}ms"
         )
         return result
 

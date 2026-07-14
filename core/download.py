@@ -185,7 +185,7 @@ class Downloader:
         if video_name is None:
             video_name = generate_file_name(url, ".mp4")
         logger.info(
-            f"[astrobot_plugin_parser_timing] 视频开始下载: url={url}, file_name={video_name}"
+            f"[astrbot_plugin_parser_timing] 视频开始下载: url={url}, file_name={video_name}"
         )
         started_at = perf_counter()
         try:
@@ -194,13 +194,13 @@ class Downloader:
             )
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.info(
-                f"[astrobot_plugin_parser_timing] 视频下载完成: path={path.name}, 耗时 {elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] 视频下载完成: path={path.name}, 耗时 {elapsed_ms:.2f}ms"
             )
             return path
         except Exception:
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.warning(
-                f"[astrobot_plugin_parser_timing] 视频下载失败: url={url}, file_name={video_name}, 耗时 {elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] 视频下载失败: url={url}, file_name={video_name}, 耗时 {elapsed_ms:.2f}ms"
             )
             raise
 
@@ -216,7 +216,7 @@ class Downloader:
         if audio_name is None:
             audio_name = generate_file_name(url, ".mp3")
         logger.info(
-            f"[astrobot_plugin_parser_timing] 音频开始下载: url={url}, file_name={audio_name}"
+            f"[astrbot_plugin_parser_timing] 音频开始下载: url={url}, file_name={audio_name}"
         )
         started_at = perf_counter()
         try:
@@ -225,13 +225,13 @@ class Downloader:
             )
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.info(
-                f"[astrobot_plugin_parser_timing] 音频下载完成: path={path.name}, 耗时 {elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] 音频下载完成: path={path.name}, 耗时 {elapsed_ms:.2f}ms"
             )
             return path
         except Exception:
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.warning(
-                f"[astrobot_plugin_parser_timing] 音频下载失败: url={url}, file_name={audio_name}, 耗时 {elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] 音频下载失败: url={url}, file_name={audio_name}, 耗时 {elapsed_ms:.2f}ms"
             )
             raise
 
@@ -296,19 +296,19 @@ class Downloader:
 
         merge_started_at = perf_counter()
         logger.debug(
-            f"[astrobot_plugin_parser_timing] 开始合并音视频: v={v_path.name}, a={a_path.name}, output={output_path.name}"
+            f"[astrbot_plugin_parser_timing] 开始合并音视频: v={v_path.name}, a={a_path.name}, output={output_path.name}"
         )
         try:
             await merge_av(v_path=v_path, a_path=a_path, output_path=output_path)
             merge_elapsed_ms = (perf_counter() - merge_started_at) * 1000
             logger.info(
-                f"[astrobot_plugin_parser_timing] 合并音视频完成: output={output_path.name}, 耗时 {merge_elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] 合并音视频完成: output={output_path.name}, 耗时 {merge_elapsed_ms:.2f}ms"
             )
             return output_path
         except Exception:
             merge_elapsed_ms = (perf_counter() - merge_started_at) * 1000
             logger.warning(
-                f"[astrobot_plugin_parser_timing] 合并音视频失败: output={output_path.name}, 耗时 {merge_elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] 合并音视频失败: output={output_path.name}, 耗时 {merge_elapsed_ms:.2f}ms"
             )
             raise
 
@@ -367,7 +367,7 @@ class Downloader:
         format: str | None = None,
         node: bool = False,
     ) -> Path:
-        logger.info(f"[astrobot_plugin_parser_timing] 视频开始下载(yt-dlp): url={url}")
+        logger.info(f"[astrbot_plugin_parser_timing] 视频开始下载(yt-dlp): url={url}")
         started_at = perf_counter()
         try:
             info = await self.ytdlp_extract_info(
@@ -380,7 +380,7 @@ class Downloader:
             if video_path.exists():
                 elapsed_ms = (perf_counter() - started_at) * 1000
                 logger.info(
-                    f"[astrobot_plugin_parser_timing] 视频下载完成(yt-dlp): path={video_path.name}, 耗时 {elapsed_ms:.2f}ms"
+                    f"[astrbot_plugin_parser_timing] 视频下载完成(yt-dlp): path={video_path.name}, 耗时 {elapsed_ms:.2f}ms"
                 )
                 return video_path
 
@@ -414,13 +414,13 @@ class Downloader:
             await self._log_video_resolution(video_path)
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.info(
-                f"[astrobot_plugin_parser_timing] 视频下载完成(yt-dlp): path={video_path.name}, 耗时 {elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] 视频下载完成(yt-dlp): path={video_path.name}, 耗时 {elapsed_ms:.2f}ms"
             )
             return video_path
         except Exception:
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.warning(
-                f"[astrobot_plugin_parser_timing] 视频下载失败(yt-dlp): url={url}, 耗时 {elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] 视频下载失败(yt-dlp): url={url}, 耗时 {elapsed_ms:.2f}ms"
             )
             raise
 
@@ -434,7 +434,7 @@ class Downloader:
         proxy: str | None = None,
         format: str | None = None,
     ) -> Path:
-        logger.info(f"[astrobot_plugin_parser_timing] 音频开始下载(yt-dlp): url={url}")
+        logger.info(f"[astrbot_plugin_parser_timing] 音频开始下载(yt-dlp): url={url}")
         started_at = perf_counter()
         try:
             file_name = generate_file_name(url)
@@ -442,7 +442,7 @@ class Downloader:
             if audio_path.exists():
                 elapsed_ms = (perf_counter() - started_at) * 1000
                 logger.info(
-                    f"[astrobot_plugin_parser_timing] 音频下载完成(yt-dlp): path={audio_path.name}, 耗时 {elapsed_ms:.2f}ms"
+                    f"[astrbot_plugin_parser_timing] 音频下载完成(yt-dlp): path={audio_path.name}, 耗时 {elapsed_ms:.2f}ms"
                 )
                 return audio_path
 
@@ -470,13 +470,13 @@ class Downloader:
             await self._ytdlp_download_with_fallback(url, opts, cookiefile)
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.info(
-                f"[astrobot_plugin_parser_timing] 音频下载完成(yt-dlp): path={audio_path.name}, 耗时 {elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] 音频下载完成(yt-dlp): path={audio_path.name}, 耗时 {elapsed_ms:.2f}ms"
             )
             return audio_path
         except Exception:
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.warning(
-                f"[astrobot_plugin_parser_timing] 音频下载失败(yt-dlp): url={url}, 耗时 {elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] 音频下载失败(yt-dlp): url={url}, 耗时 {elapsed_ms:.2f}ms"
             )
             raise
 

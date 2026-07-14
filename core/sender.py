@@ -34,6 +34,29 @@ from .exception import (
 from .render import Renderer
 
 
+def _chunk_comments(text: str, max_chars: int = 200) -> list[str]:
+    """将评论文本按评论边界分块，每块不超过 max_chars 字"""
+    if len(text) <= max_chars:
+        return [text]
+
+    header, _, body = text.partition("\n")
+    blocks = body.split("\n\n")
+    chunks: list[str] = []
+    current = header
+
+    for block in blocks:
+        candidate = f"{current}\n\n{block}" if current else block
+        if len(candidate) <= max_chars:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            current = f"{header}\n\n{block}"
+    if current:
+        chunks.append(current)
+    return chunks or [text]
+
+
 class MessageSender:
     """
     消息发送器
@@ -58,7 +81,7 @@ class MessageSender:
         if not isinstance(received_at, (int, float)):
             return
         elapsed_ms = (perf_counter() - float(received_at)) * 1000
-        logger.info(f"[astrobot_plugin_parser_timing] 收到消息到发送消息包前耗时 {elapsed_ms:.2f}ms, block={block_desc}")
+        logger.info(f"[astrbot_plugin_parser_timing] 收到消息到发送消息包前耗时 {elapsed_ms:.2f}ms, block={block_desc}")
 
     def _build_send_plan(self, result: ParseResult) -> dict:
         """
@@ -141,6 +164,10 @@ class MessageSender:
             if stats_info := result.extra.get("stats"):
                 # segs.append(Plain("b站视频信息："))
                 segs.append(Plain(str(stats_info)))
+
+            if comments_text := result.extra.get("comments"):
+                for chunk in _chunk_comments(comments_text):
+                    segs.append(Plain(chunk))
 
             return segs
 
@@ -273,6 +300,13 @@ class MessageSender:
         ) and not (plan["plain_preview"] and self._is_bili_video_result(result)):
             segs.append(Plain(str(stats_info)))
 
+        # 热门评论（B站视频），避免与 plain_preview 重复
+        if (
+            comments_text := result.extra.get("comments")
+        ) and not (plan["plain_preview"] and self._is_bili_video_result(result)):
+            for chunk in _chunk_comments(comments_text):
+                segs.append(Plain(chunk))
+
         return segs
 
 
@@ -303,7 +337,7 @@ class MessageSender:
             chunk = segs[i : i + chunk_size]
             nodes = Nodes([])
             for seg in chunk:
-                nodes.nodes.append(Node(uin="10086", name="樱花朝日", content=[seg]))
+                nodes.nodes.append(Node(uin="1309139464", name="樱花朝日", content=[seg]))
             merged_batches.append(nodes)
 
         logger.info(f"合并后的消息包的数量: {len(merged_batches)}")

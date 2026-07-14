@@ -165,6 +165,9 @@ class BilibiliParser(BaseParser):
             else:
                 ai_summary: str = "哔哩哔哩 cookie 未配置或失效, 无法使用 AI 总结"
 
+            # 获取热门评论
+            comments_text = await self._fetch_hot_comments(video_info.aid)
+
             url = f"https://bilibili.com/{video_info.bvid}"
             url += f"?p={page_info.index + 1}" if page_info.index > 0 else ""
 
@@ -201,6 +204,11 @@ class BilibiliParser(BaseParser):
                 page_info.duration,
             )
 
+            # 组合 AI 总结和热门评论（用于卡片渲染）
+            card_info = ai_summary
+            if comments_text:
+                card_info = f"{ai_summary}\n\n{comments_text}"
+
             return self.result(
                 url=url,
                 title=page_info.title,
@@ -209,14 +217,15 @@ class BilibiliParser(BaseParser):
                 author=author,
                 contents=[video_content],
                 extra={
-                    "info": ai_summary,
+                    "info": card_info,
                     "stats": video_info.formatted_stats_info,
+                    "comments": comments_text,
                 },
             )
         finally:
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.debug(
-                f"[astrobot_plugin_parser_timing] bilibili.parse_video 完成: bvid={bvid}, avid={avid}, page_num={page_num}, 耗时 {elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] bilibili.parse_video 完成: bvid={bvid}, avid={avid}, page_num={page_num}, 耗时 {elapsed_ms:.2f}ms"
             )
 
     async def parse_dynamic(self, dynamic_id: int):
@@ -255,7 +264,7 @@ class BilibiliParser(BaseParser):
         finally:
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.debug(
-                f"[astrobot_plugin_parser_timing] bilibili.parse_dynamic 完成: dynamic_id={dynamic_id}, 耗时 {elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] bilibili.parse_dynamic 完成: dynamic_id={dynamic_id}, 耗时 {elapsed_ms:.2f}ms"
             )
 
     async def parse_opus(self, opus_id: int):
@@ -271,7 +280,7 @@ class BilibiliParser(BaseParser):
         finally:
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.debug(
-                f"[astrobot_plugin_parser_timing] bilibili.parse_opus 完成: opus_id={opus_id}, 耗时 {elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] bilibili.parse_opus 完成: opus_id={opus_id}, 耗时 {elapsed_ms:.2f}ms"
             )
 
     async def parse_read_with_opus(self, read_id: int):
@@ -288,7 +297,7 @@ class BilibiliParser(BaseParser):
         finally:
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.debug(
-                f"[astrobot_plugin_parser_timing] bilibili.parse_read_with_opus 完成: read_id={read_id}, 耗时 {elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] bilibili.parse_read_with_opus 完成: read_id={read_id}, 耗时 {elapsed_ms:.2f}ms"
             )
 
     async def _parse_opus_obj(self, bili_opus: Opus):
@@ -375,7 +384,7 @@ class BilibiliParser(BaseParser):
         finally:
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.debug(
-                f"[astrobot_plugin_parser_timing] bilibili.parse_live 完成: room_id={room_id}, 耗时 {elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] bilibili.parse_live 完成: room_id={room_id}, 耗时 {elapsed_ms:.2f}ms"
             )
 
     async def parse_favlist(self, fav_id: int):
@@ -413,7 +422,7 @@ class BilibiliParser(BaseParser):
         finally:
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.debug(
-                f"[astrobot_plugin_parser_timing] bilibili.parse_favlist 完成: fav_id={fav_id}, 耗时 {elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] bilibili.parse_favlist 完成: fav_id={fav_id}, 耗时 {elapsed_ms:.2f}ms"
             )
 
     async def _get_video(
@@ -431,6 +440,59 @@ class BilibiliParser(BaseParser):
             return Video(bvid=bvid, credential=await self.login.credential)
         else:
             raise ParseException("avid 和 bvid 至少指定一项")
+
+    async def _fetch_hot_comments(self, oid: int, count: int = 8) -> str:
+        """获取视频热门评论并格式化为字符串
+
+        Args:
+            oid: 视频 aid
+            count: 获取的评论数量
+
+        Returns:
+            格式化后的评论字符串，失败时返回空字符串
+        """
+        try:
+            from re import sub as re_sub
+
+            from bilibili_api.comment import CommentResourceType, OrderType, get_comments
+
+            resp = await get_comments(
+                oid=oid,
+                type_=CommentResourceType.VIDEO,
+                order=OrderType.LIKE,
+                credential=await self.login.credential,
+            )
+            if not isinstance(resp, dict):
+                return ""
+            fetched_comments = resp.get("replies") or []
+            if not fetched_comments:
+                return ""
+
+            comments_list: list[str] = []
+            for cmt in fetched_comments:
+                if len(comments_list) >= count:
+                    break
+                if (
+                    cmt
+                    and isinstance(cmt, dict)
+                    and cmt.get("member")
+                    and cmt.get("content")
+                ):
+                    uname = cmt["member"].get("uname", "未知用户")
+                    message = cmt["content"].get("message", "")
+                    likes = cmt.get("like", 0)
+                    # 去除 BBcode 标签（如 [笑哭] 等表情标签）
+                    message_text = re_sub(r"\[.*?\]", "", message).strip()
+                    if message_text:
+                        comment_line = f"👍 (+{likes}) {uname}: {message_text}"
+                        comments_list.append(comment_line)
+
+            if comments_list:
+                return "📝 热门评论:\n" + "\n\n".join(comments_list)
+            return ""
+        except Exception as e:
+            logger.debug(f"获取热门评论失败 (oid={oid}): {e}")
+            return ""
 
     async def extract_download_urls(
         self,
@@ -494,7 +556,7 @@ class BilibiliParser(BaseParser):
         finally:
             elapsed_ms = (perf_counter() - started_at) * 1000
             logger.debug(
-                f"[astrobot_plugin_parser_timing] bilibili.extract_download_urls 完成: bvid={bvid}, avid={avid}, page_index={page_index}, 耗时 {elapsed_ms:.2f}ms"
+                f"[astrbot_plugin_parser_timing] bilibili.extract_download_urls 完成: bvid={bvid}, avid={avid}, page_index={page_index}, 耗时 {elapsed_ms:.2f}ms"
             )
 
     def _manual_extract_urls(

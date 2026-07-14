@@ -42,7 +42,20 @@ class PageInfo:
     cover: str | None = None
 
 
+class Comment(Struct):
+    """热门评论"""
+
+    uname: str
+    """评论者用户名"""
+    text: str
+    """评论内容（纯文本，已去除 BBcode 标签）"""
+    likes: int
+    """点赞数"""
+
+
 class VideoInfo(Struct):
+    aid: int
+    """avid"""
     bvid: str
     """bvid"""
     title: str

@@ -113,7 +113,7 @@ class ParserPlugin(Star):
         raise ValueError(f"未找到类型为 {parser_type} 的 parser 实例")
 
     @filter.event_message_type(filter.EventMessageType.ALL)
-    async def on_message(self, event: AstrMessageEvent):
+    async def on_message(self, event: AstrMessageEvent, *args, **kwargs):
         """消息的统一入口"""
         parse_started_at = perf_counter()
         umo = event.unified_msg_origin
@@ -180,12 +180,12 @@ class ParserPlugin(Star):
                 arbiter_elapsed_ms = (perf_counter() - arbiter_started_at) * 1000
                 if not is_win:
                     logger.debug(
-                        f"[astrobot_plugin_parser_timing] 仲裁耗时 {arbiter_elapsed_ms:.2f}ms, 结果=failed"
+                        f"[astrbot_plugin_parser_timing] 仲裁耗时 {arbiter_elapsed_ms:.2f}ms, 结果=failed"
                     )
                     logger.debug("Bot在仲裁中输了, 跳过解析")
                     return
                 logger.debug(
-                    f"[astrobot_plugin_parser_timing] 仲裁耗时 {arbiter_elapsed_ms:.2f}ms, 结果=success"
+                    f"[astrbot_plugin_parser_timing] 仲裁耗时 {arbiter_elapsed_ms:.2f}ms, 结果=success"
                 )
                 logger.debug("Bot在仲裁中胜出, 准备解析...")
         else:
@@ -204,13 +204,13 @@ class ParserPlugin(Star):
         except Exception:
             elapsed_ms = (perf_counter() - parse_started_at) * 1000
             logger.debug(
-                f"[astrobot_plugin_parser_timing] 从收到消息到解析失败耗时 {elapsed_ms:.2f}ms, keyword={keyword}, parser={parser.platform.name}"
+                f"[astrbot_plugin_parser_timing] 从收到消息到解析失败耗时 {elapsed_ms:.2f}ms, keyword={keyword}, parser={parser.platform.name}"
             )
             raise
 
         elapsed_ms = (perf_counter() - parse_started_at) * 1000
         logger.debug(
-            f"[astrobot_plugin_parser_timing] 从收到消息到解析完成耗时 {elapsed_ms:.2f}ms, keyword={keyword}, parser={parser.platform.name}"
+            f"[astrbot_plugin_parser_timing] 从收到消息到解析完成耗时 {elapsed_ms:.2f}ms, keyword={keyword}, parser={parser.platform.name}"
         )
 
         # 传递“收到消息时刻”给 sender，用于统计端到端发送耗时
