@@ -91,7 +91,7 @@ class Downloader:
         headers: dict[str, str] | None = None,
         proxy: str | None | object = ...,
     ) -> Path:
-        """流式下载"""
+        """流式下载，支持断点续传"""
         if not file_name:
             file_name = generate_file_name(url)
         file_path = self.cfg.cache_dir / file_name
@@ -100,28 +100,57 @@ class Downloader:
             return file_path
         headers = headers or self.default_headers
         retries = self.cfg.download_retry_times
+        max_bytes = self.max_size * 1024 * 1024
+        downloaded = 0
         for attempt in range(retries + 1):
             try:
+                # 断点续传：如果已有部分数据，发送 Range 请求
+                request_headers = headers.copy()
+                if downloaded > 0:
+                    request_headers["Range"] = f"bytes={downloaded}-"
+
                 async with self.client.get(
-                    url, headers=headers, allow_redirects=True, proxy=proxy
+                    url, headers=request_headers, allow_redirects=True, proxy=proxy
                 ) as response:
                     if response.status >= 400:
-                        raise ClientError(f"HTTP {response.status} {response.reason}")
-                    content_length = response.content_length
-                    max_bytes = self.max_size * 1024 * 1024
+                        raise ClientError(
+                            f"HTTP {response.status} {response.reason}"
+                        )
+
+                    if response.status == 206:  # 服务器支持断点续传
+                        content_length = response.content_length
+                        total = (
+                            downloaded + content_length
+                            if content_length
+                            else None
+                        )
+                    elif downloaded > 0:
+                        # 服务器不支持 Range，从头重新下载
+                        logger.warning("服务器不支持断点续传，重新下载")
+                        downloaded = 0
+                        await safe_unlink(file_path)
+                        content_length = response.content_length
+                        total = content_length
+                    else:
+                        content_length = response.content_length
+                        total = content_length
 
                     if content_length == 0:
                         logger.warning(f"媒体 url: {url}, 大小为 0, 取消下载")
                         raise ZeroSizeException
-                    if content_length and content_length > max_bytes:
+                    if total and total > max_bytes:
                         logger.warning(
-                            f"媒体 url: {url} 大小 {content_length / 1024 / 1024:.2f} MB 超过 {self.max_size} MB, 取消下载"
+                            f"媒体 url: {url} 大小 {total / 1024 / 1024:.2f} MB 超过 {self.max_size} MB, 取消下载"
                         )
                         raise SizeLimitException
 
-                    downloaded = 0
-                    with self.get_progress_bar(file_name, content_length) as bar:
-                        async with aiofiles.open(file_path, "wb") as file:
+                    mode = "ab" if downloaded > 0 else "wb"
+                    attempt_start_bytes = downloaded
+                    attempt_started_at = last_log_at = perf_counter()
+                    with self.get_progress_bar(
+                        file_name, total, initial=downloaded
+                    ) as bar:
+                        async with aiofiles.open(file_path, mode) as file:
                             async for chunk in response.content.iter_chunked(
                                 1024 * 1024
                             ):
@@ -130,41 +159,80 @@ class Downloader:
                                     raise SizeLimitException
                                 await file.write(chunk)
                                 bar.update(len(chunk))
+                                now = perf_counter()
+                                if now - last_log_at >= 5:
+                                    attempt_bytes = (
+                                        downloaded - attempt_start_bytes
+                                    )
+                                    elapsed = now - attempt_started_at
+                                    speed = (
+                                        attempt_bytes / elapsed
+                                        if elapsed > 0
+                                        else 0
+                                    )
+                                    if total:
+                                        pct = downloaded / total * 100
+                                        progress = (
+                                            f"{downloaded}/{total}"
+                                            f" ({pct:.1f}%)"
+                                        )
+                                        remaining = total - downloaded
+                                        eta = (
+                                            f"{remaining / speed:.0f}s"
+                                            if speed > 0
+                                            else "N/A"
+                                        )
+                                    else:
+                                        progress = f"{downloaded} bytes"
+                                        eta = "N/A"
+                                    logger.debug(
+                                        f"下载进度 [{file_name}]: {progress}, "
+                                        f"速度: {speed / 1024 / 1024:.2f} MB/s, "
+                                        f"ETA: {eta}"
+                                    )
+                                    last_log_at = now
 
                     if downloaded == 0:
-                        logger.warning(f"媒体 url: {url}, 实际大小为 0, 取消下载")
-                        raise ZeroSizeException
-                    if content_length and downloaded < content_length:
-                        raise ClientError(
-                            f"HTTP payload incomplete {downloaded}/{content_length}"
+                        logger.warning(
+                            f"媒体 url: {url}, 实际大小为 0, 取消下载"
                         )
+                        raise ZeroSizeException
 
                 return file_path
             except (ZeroSizeException, SizeLimitException):
                 await safe_unlink(file_path)
                 raise
             except (ClientError, TimeoutError) as exc:
-                await safe_unlink(file_path)
                 if attempt < retries:
+                    # 保留部分下载的数据用于断点续传
                     await sleep(1 + attempt)
                     continue
-                logger.exception(f"下载失败 | url: {url}, file_path: {file_path}")
-                raise DownloadException("媒体下载失败") from exc
-        raise DownloadException("媒体下载失败")
+                await safe_unlink(file_path)
+                logger.exception(
+                    f"下载失败 | url: {url}, file_path: {file_path}"
+                )
+                if isinstance(exc, TimeoutError):
+                    raise DownloadException("下载超时多次") from exc
+                raise DownloadException("下载中断多次（查看日志）") from exc
+        raise DownloadException("其他原因（查看日志）")
 
     @staticmethod
-    def get_progress_bar(desc: str, total: int | None = None) -> tqdm:
+    def get_progress_bar(
+        desc: str, total: int | None = None, initial: int = 0
+    ) -> tqdm:
         """获取进度条 bar
 
         Args:
             desc (str): 描述
             total (int | None): 总大小. Defaults to None.
+            initial (int): 初始已下载字节数. Defaults to 0.
 
         Returns:
             tqdm: 进度条
         """
         return tqdm(
             total=total,
+            initial=initial,
             unit="B",
             unit_scale=True,
             unit_divisor=1024,
@@ -374,7 +442,7 @@ class Downloader:
                 url, cookiefile=cookiefile, headers=headers, proxy=proxy
             )
             if info.duration > self.cfg.max_duration:
-                raise DurationLimitException
+                raise DurationLimitException(info.duration, self.cfg.max_duration)
 
             video_path = self.cfg.cache_dir / generate_file_name(url, ".mp4")
             if video_path.exists():

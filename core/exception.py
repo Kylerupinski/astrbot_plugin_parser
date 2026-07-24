@@ -16,7 +16,7 @@ class DownloadException(ParseException):
     """下载异常"""
 
     def __init__(self, message: str | None = None):
-        super().__init__(message or "媒体下载失败")
+        super().__init__(message or "其他原因（查看日志）")
 
 
 class DownloadLimitException(DownloadException):
@@ -35,8 +35,10 @@ class SizeLimitException(DownloadLimitException):
 class DurationLimitException(DownloadLimitException):
     """下载时长超过限制异常"""
 
-    def __init__(self):
-        super().__init__("媒体时长超过配置限制，取消下载")
+    def __init__(self, duration: int, limit: int):
+        super().__init__(
+            f"媒体长度过长（媒体长度{duration}s，超过限制{limit}s）"
+        )
 
 
 class ZeroSizeException(DownloadException):

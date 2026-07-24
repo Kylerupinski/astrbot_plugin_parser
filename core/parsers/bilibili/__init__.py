@@ -180,7 +180,9 @@ class BilibiliParser(BaseParser):
                     video=video, bvid=bvid, page_index=page_info.index
                 )
                 if page_info.duration > self.cfg.max_duration:
-                    raise DurationLimitException
+                    raise DurationLimitException(
+                        page_info.duration, self.cfg.max_duration
+                    )
                 if a_url is not None:
                     return await self.downloader.download_av_and_merge(
                         v_url,
